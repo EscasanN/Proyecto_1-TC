@@ -1,0 +1,6 @@
+(b|b)*abb(a|b)* ; babbaaaa
+(a*|b*)+ ; abbb
+((ε|a)|b)* ; aab
+(a|b)*abb(a|b)* ; abb
+0?(1?)*?0* ; 010
+a(b|c)* ; 010
