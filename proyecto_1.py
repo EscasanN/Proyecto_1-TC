@@ -11,7 +11,7 @@ PREC = {
     '.': 2,
     '|': 1
 }
-RIGHT_ASSOC = {'*', '+', '?'}  
+RIGHT_ASSOC = {'*', '+', '?'}  # operadores unarios son asociativos a la derecha
 
 def es_simbolo(c):
     return (
@@ -80,8 +80,8 @@ class Estado:
     __slots__ = ("id", "trans", "eps")
     def __init__(self, id_):
         self.id = id_
-        self.trans = defaultdict(set)  
-        self.eps = set()               
+        self.trans = defaultdict(set)   # Dict[str, Set[Estado]]
+        self.eps = set()                # Set[Estado]
 
 class AFN:
     def __init__(self, inicio, aceptacion, estados):
@@ -211,68 +211,116 @@ def acepta(afn, cadena):
     return afn.aceptacion in actual
 
 # =========================================================
-# Dibujo del AFN
+# Dibujo del AFN / AFD (mejoras de legibilidad de flechas)
 # =========================================================
 
-def dibujar_afn(afn, nombre_png, nombre_dot):
+def _render_with_graphviz(edges, start_id, accept_ids, png_path, dot_path):
+    """Intenta renderizar con Graphviz (flechas nítidas y rankdir=LR)."""
     try:
-        import networkx as nx
-        import matplotlib.pyplot as plt
+        from graphviz import Digraph
+        dot = Digraph(format='png')
+        dot.attr(rankdir='LR', dpi='180', concentrate='false')
+        dot.attr('node', shape='circle')
 
-        G = nx.DiGraph()
-        for s in afn.estados:
-            G.add_node(s.id)
+        nodes = set([start_id])
+        for (u, v) in edges.keys():
+            nodes.add(u); nodes.add(v)
 
-        edge_labels = defaultdict(list)
-        for s in afn.estados:
-            for v in s.eps:
-                edge_labels[(s.id, v.id)].append('ε')
-            for sym, dests in s.trans.items():
-                for v in dests:
-                    edge_labels[(s.id, v.id)].append(sym)
-        for (u, v), labs in edge_labels.items():
-            G.add_edge(u, v, label='|'.join(sorted(set(labs))))
+        for u in nodes:
+            if u in accept_ids:
+                dot.node(str(u), shape='doublecircle')
+            else:
+                dot.node(str(u), shape='circle')
 
-        pos = nx.spring_layout(G, seed=42)
-        accept_nodes = [afn.aceptacion.id]
-        start_node = afn.inicio.id
-        others = [n for n in G.nodes() if n not in accept_nodes and n != start_node]
+        dot.node('start', shape='point')
+        dot.edge('start', str(start_id), label='')
 
-        nx.draw_networkx_nodes(G, pos, nodelist=others)
-        nx.draw_networkx_nodes(G, pos, nodelist=[start_node], node_shape='s')
-        nx.draw_networkx_nodes(G, pos, nodelist=accept_nodes, node_size=900)
-        nx.draw_networkx_labels(G, pos, labels={n: str(n) for n in G.nodes()})
-        nx.draw_networkx_edges(G, pos, arrows=True)
-        nx.draw_networkx_edge_labels(G, pos,
-                                     edge_labels={(u, v): d['label'] for u, v, d in G.edges(data=True)})
-        plt.axis('off')
-        plt.tight_layout()
-        plt.savefig(nombre_png, dpi=170)
-        plt.close()
-        return f"Imagen AFN generada: {nombre_png}"
-    except Exception as e:
-        # Fallback: DOT
+        for (u, v), lab in edges.items():
+            dot.edge(str(u), str(v), label=lab)
+
+        with open(dot_path, 'w', encoding='utf-8') as f:
+            f.write(dot.source)
+
+        dot.render(filename=png_path, cleanup=True)  # produce png_path.png
+        import os, shutil
+        src = png_path + '.png'
+        if os.path.exists(src):
+            shutil.move(src, png_path)
+        return f"Imagen generada con Graphviz: {png_path}"
+    except Exception:
+        return None  # usar fallback
+
+
+def _render_with_networkx(nodes, edges, start_id, accept_ids, png_path):
+    """Fallback usando NetworkX/Matplotlib con ajustes de flecha y layout."""
+    import networkx as nx
+    import matplotlib.pyplot as plt
+
+    G = nx.DiGraph()
+    G.add_nodes_from(nodes)
+    for (u, v), lab in edges.items():
+        G.add_edge(u, v, label=lab)
+
+    pos = None
+    try:
+        from networkx.drawing.nx_pydot import graphviz_layout
+        pos = graphviz_layout(G, prog='dot')
+    except Exception:
         try:
-            with open(nombre_dot, 'w', encoding='utf-8') as f:
-                f.write("digraph NFA {\n  rankdir=LR;\n")
-                f.write(f'  node [shape=circle];\n')
-                for s in afn.estados:
-                    shape = "doublecircle" if s is afn.aceptacion else "circle"
-                    f.write(f'  {s.id} [shape={shape}];\n')
-                f.write('  start [shape=point];\n')
-                f.write(f'  start -> {afn.inicio.id};\n')
-                def w(u, v, lab):
-                    return f'  {u} -> {v} [label="{lab}"];\n'
-                for s in afn.estados:
-                    for v in s.eps:
-                        f.write(w(s.id, v.id, 'ε'))
-                    for sym, dests in s.trans.items():
-                        for v in dests:
-                            f.write(w(s.id, v.id, sym))
-                f.write("}\n")
-            return f"No se pudo dibujar AFN con networkx/matplotlib ({type(e).__name__}). Se generó DOT: {nombre_dot}"
-        except Exception as e2:
-            return f"No se pudo generar imagen ni DOT del AFN: {e2}"
+            from networkx.drawing.nx_agraph import graphviz_layout as gv2
+            pos = gv2(G, prog='dot')
+        except Exception:
+            pos = nx.spring_layout(G, seed=42, k=0.8, iterations=200)
+
+    accept_nodes = list(accept_ids)
+    others = [n for n in G.nodes if n not in accept_nodes and n != start_id]
+
+    plt.figure(figsize=(9, 6))
+    nx.draw_networkx_nodes(G, pos, nodelist=others, node_size=600, linewidths=1.0)
+    nx.draw_networkx_nodes(G, pos, nodelist=[start_id], node_shape='s', node_size=700, linewidths=1.0)
+    nx.draw_networkx_nodes(G, pos, nodelist=accept_nodes, node_size=900, linewidths=2.0)
+    nx.draw_networkx_labels(G, pos, labels={n: str(n) for n in G.nodes()}, font_size=10)
+
+    nx.draw_networkx_edges(
+        G, pos,
+        arrows=True,
+        arrowsize=24,
+        width=1.6,
+        connectionstyle='arc3,rad=0.16'
+    )
+
+    e_labels = {(u, v): d['label'] for u, v, d in G.edges(data=True)}
+    nx.draw_networkx_edge_labels(
+        G, pos, edge_labels=e_labels,
+        font_size=9,
+        bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='none', alpha=0.8)
+    )
+
+    import matplotlib
+    plt.axis('off')
+    plt.tight_layout()
+    plt.savefig(png_path, dpi=180)
+    plt.close()
+    return f"Imagen generada con NetworkX/Matplotlib: {png_path}"
+
+def dibujar_afn(afn, nombre_png, nombre_dot):
+    # reunir etiquetas por arista
+    from collections import defaultdict as _dd
+    edge_labels = _dd(list)
+    nodes = set()
+    for s in afn.estados:
+        nodes.add(s.id)
+        for v in s.eps:
+            edge_labels[(s.id, v.id)].append('ε')
+        for sym, dests in s.trans.items():
+            for v in dests:
+                edge_labels[(s.id, v.id)].append(sym)
+    edges = {(u, v): '|'.join(sorted(set(labs))) for (u, v), labs in edge_labels.items()}
+
+    ok = _render_with_graphviz(edges, afn.inicio.id, {afn.aceptacion.id}, nombre_png, nombre_dot)
+    if ok:
+        return ok
+    return _render_with_networkx(nodes, edges, afn.inicio.id, {afn.aceptacion.id}, nombre_png)
 
 # =========================================================
 # AFN -> AFD 
@@ -282,9 +330,9 @@ class EstadoDFA:
     __slots__ = ("id", "trans", "aceptacion", "nfa_set")
     def __init__(self, id_, nfa_set, aceptacion=False):
         self.id = id_
-        self.nfa_set = nfa_set        
-        self.trans = {}               
-        self.aceptacion = aceptacion  
+        self.nfa_set = nfa_set        # frozenset(Estados NFA) o None
+        self.trans = {}               # Dict[str, EstadoDFA]
+        self.aceptacion = aceptacion  # bool
 
 class AFD:
     def __init__(self, inicio, estados):
@@ -340,58 +388,22 @@ def acepta_afd(afd, cadena):
     return actual.aceptacion
 
 def dibujar_afd(afd, nombre_png, nombre_dot):
-    try:
-        import networkx as nx
-        import matplotlib.pyplot as plt
+    from collections import defaultdict as _dd
+    edge_labels = _dd(list)
+    nodes = set()
+    accept_ids = set()
+    for s in afd.estados:
+        nodes.add(s.id)
+        if s.aceptacion:
+            accept_ids.add(s.id)
+        for sym, v in s.trans.items():
+            edge_labels[(s.id, v.id)].append(sym)
+    edges = {(u, v): '|'.join(sorted(set(labs))) for (u, v), labs in edge_labels.items()}
 
-        G = nx.DiGraph()
-        for s in afd.estados:
-            G.add_node(s.id)
-
-        edge_labels = defaultdict(list)
-        for s in afd.estados:
-            for sym, v in s.trans.items():
-                edge_labels[(s.id, v.id)].append(sym)
-        for (u, v), labs in edge_labels.items():
-            G.add_edge(u, v, label='|'.join(sorted(set(labs))))
-
-        pos = nx.spring_layout(G, seed=123)
-        accept_nodes = [s.id for s in afd.estados if s.aceptacion]
-        start_node = afd.inicio.id
-        others = [n for n in G.nodes() if n not in accept_nodes and n != start_node]
-
-        nx.draw_networkx_nodes(G, pos, nodelist=others)
-        nx.draw_networkx_nodes(G, pos, nodelist=[start_node], node_shape='s')
-        nx.draw_networkx_nodes(G, pos, nodelist=accept_nodes, node_size=900)
-        nx.draw_networkx_labels(G, pos, labels={n: str(n) for n in G.nodes()})
-        nx.draw_networkx_edges(G, pos, arrows=True)
-        nx.draw_networkx_edge_labels(
-            G, pos, edge_labels={(u, v): d['label'] for u, v, d in G.edges(data=True)}
-        )
-        plt.axis('off')
-        plt.tight_layout()
-        plt.savefig(nombre_png, dpi=170)
-        plt.close()
-        return f"Imagen AFD generada: {nombre_png}"
-    except Exception as e:
-        try:
-            with open(nombre_dot, 'w', encoding='utf-8') as f:
-                f.write("digraph DFA {\n  rankdir=LR;\n")
-                f.write(f'  node [shape=circle];\n')
-                for s in afd.estados:
-                    shape = "doublecircle" if s.aceptacion else "circle"
-                    f.write(f'  {s.id} [shape={shape}];\n')
-                f.write('  start [shape=point];\n')
-                f.write(f'  start -> {afd.inicio.id};\n')
-                def w(u, v, lab):
-                    return f'  {u} -> {v} [label="{lab}"];\n'
-                for s in afd.estados:
-                    for sym, v in s.trans.items():
-                        f.write(w(s.id, v.id, sym))
-                f.write("}\n")
-            return f"No se pudo dibujar AFD con networkx/matplotlib ({type(e).__name__}). Se generó DOT: {nombre_dot}"
-        except Exception as e2:
-            return f"No se pudo generar imagen ni DOT del AFD: {e2}"
+    ok = _render_with_graphviz(edges, afd.inicio.id, accept_ids, nombre_png, nombre_dot)
+    if ok:
+        return ok
+    return _render_with_networkx(nodes, edges, afd.inicio.id, accept_ids, nombre_png)
 
 # =========================================================
 # Minimizacion de AFD (Hopcroft)
@@ -456,7 +468,7 @@ def dfa_completar_con_sumidero(afd):
                 ns.trans[a] = sink
                 need_sink = True
     if need_sink:
-  
+        # bucles en el sumidero
         for a in A:
             sink.trans[a] = sink
         nuevos.append(sink)
@@ -479,11 +491,11 @@ def minimizar_afd(afd):
     estados = afd2.estados
     A = sorted(dfa_alfabeto(afd2))
 
-
+    # índices
     idx_of = {s.id: i for i, s in enumerate(estados)}
     by_idx = estados
 
-
+    # delta en tabla
     sym_to_pos = {a: k for k, a in enumerate(A)}
     delta = [[None]*len(A) for _ in by_idx]
     for i, s in enumerate(by_idx):
@@ -500,7 +512,7 @@ def minimizar_afd(afd):
     from collections import deque as _dq
     W = _dq([set(g) for g in P])
 
-    inv = [defaultdict(set) for _ in A]  
+    inv = [defaultdict(set) for _ in A]  # preimagen por letra
     for i in range(len(by_idx)):
         for k in range(len(A)):
             j = delta[i][k]
