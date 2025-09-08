@@ -211,7 +211,7 @@ def acepta(afn, cadena):
     return afn.aceptacion in actual
 
 # =========================================================
-# Dibujo del AFN / AFD (mejoras de legibilidad de flechas)
+# Dibujo del AFN / AFD (mejoras de legibilidad de flechas y finales)
 # =========================================================
 
 def _render_with_graphviz(edges, start_id, accept_ids, png_path, dot_path):
@@ -228,10 +228,12 @@ def _render_with_graphviz(edges, start_id, accept_ids, png_path, dot_path):
 
         for u in nodes:
             if u in accept_ids:
-                dot.node(str(u), shape='doublecircle')
+                # Finales: doble círculo y relleno suave para distinguir
+                dot.node(str(u), shape='doublecircle', style='filled', fillcolor='lightgrey')
             else:
                 dot.node(str(u), shape='circle')
 
+        # nodo de inicio (punto) y flecha de inicio
         dot.node('start', shape='point')
         dot.edge('start', str(start_id), label='')
 
@@ -252,7 +254,7 @@ def _render_with_graphviz(edges, start_id, accept_ids, png_path, dot_path):
 
 
 def _render_with_networkx(nodes, edges, start_id, accept_ids, png_path):
-    """Fallback usando NetworkX/Matplotlib con ajustes de flecha y layout."""
+    """Fallback usando NetworkX/Matplotlib con ajustes de flecha y layout + final doble aro."""
     import networkx as nx
     import matplotlib.pyplot as plt
 
@@ -276,9 +278,15 @@ def _render_with_networkx(nodes, edges, start_id, accept_ids, png_path):
     others = [n for n in G.nodes if n not in accept_nodes and n != start_id]
 
     plt.figure(figsize=(9, 6))
-    nx.draw_networkx_nodes(G, pos, nodelist=others, node_size=600, linewidths=1.0)
-    nx.draw_networkx_nodes(G, pos, nodelist=[start_id], node_shape='s', node_size=700, linewidths=1.0)
-    nx.draw_networkx_nodes(G, pos, nodelist=accept_nodes, node_size=900, linewidths=2.0)
+    # Otros nodos
+    nx.draw_networkx_nodes(G, pos, nodelist=others, node_size=620, linewidths=1.2)
+    # Inicio: cuadrado
+    nx.draw_networkx_nodes(G, pos, nodelist=[start_id], node_shape='s', node_size=760, linewidths=1.2)
+    # Finales: fondo suave
+    nx.draw_networkx_nodes(G, pos, nodelist=accept_nodes, node_size=760, linewidths=1.5, node_color='#e0e0e0')
+    # Aro exterior extra para simular "doble círculo"
+    nx.draw_networkx_nodes(G, pos, nodelist=accept_nodes, node_size=880, linewidths=2.2, node_color='none')
+
     nx.draw_networkx_labels(G, pos, labels={n: str(n) for n in G.nodes()}, font_size=10)
 
     nx.draw_networkx_edges(
@@ -296,7 +304,6 @@ def _render_with_networkx(nodes, edges, start_id, accept_ids, png_path):
         bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='none', alpha=0.8)
     )
 
-    import matplotlib
     plt.axis('off')
     plt.tight_layout()
     plt.savefig(png_path, dpi=180)
