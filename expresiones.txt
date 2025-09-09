@@ -1,6 +1,10 @@
-(b|b)*abb(a|b)* ; babbaaaa
-(a*|b*)+ ; abbb
-((ε|a)|b)* ; aab
-(a|b)*abb(a|b)* ; abb
-0?(1?)*?0* ; 010
-a(b|c)* ; 010
+(a|b)*abb ; aaaaaaaaaaaaaaaaaaaaaaaaabb
+(a|b)*abb ; aaaaaaaaaaaaaaaaaaaaaaaaabab
+((a|b)_ε(c|ε)+)|(d?ε+(a|εb)_) ; c
+((a|b)_ε(c|ε)+)|(d?ε+(a|εb)_) ; abc
+\?(((.|ε)?!?)*)+ ; ?..
+\?(((.|ε)?!?)*)+ ; !, !.!.!, !?.
+if\((a|x|t)+\)\{y\}(else\{n\})? ; if(a){y}else{n}
+if\((a|x|t)+\)\{y\}(else\{n\})? ; if(atx){y}
+if\((a|x|t)+\)\{y\}(else\{n\})? ; if(){y}else{n}
+if\((a|x|t)+\)\{y\}(else\{n\})? ; if(a){y}else{

@@ -1,79 +1,138 @@
 import sys
-import re
 from collections import defaultdict, deque
 
 # =========================================================
-# Utilidades de REGEX -> Postfija
+# REGEX -> Postfija (tokenización PRO + operador de concat interno)
 # =========================================================
 
+# Operadores visibles para el usuario (¡ya no está el '.'):
 PREC = {
     '*': 3, '+': 3, '?': 3,
-    '.': 2,
+    '·': 2,            # operador interno de concatenación (no tecleable)
     '|': 1
 }
-RIGHT_ASSOC = {'*', '+', '?'}  # operadores unarios son asociativos a la derecha
+RIGHT_ASSOC = {'*', '+', '?'}
+OPS = set(['(', ')', '*', '+', '?', '|'])  # sin '.'
 
-def es_simbolo(c):
-    return (
-        c == 'ε' or
-        c.isalnum() or
-        c in ['_', '#']
-    )
+# ---------- Tokens ----------
+# Cada token es un dict:
+#   - type: 'LIT' | 'OP'
+#   - val : str (carácter)
+# Nota: 'ε' es LIT('ε'). El operador de concatenación es OP('·').
+
+def tokenizar(regex):
+    """
+    Convierte la cadena regex en una lista de tokens, manejando escapes con '\\'.
+    Reglas:
+      - '\\x' => LIT('x') para cualquier 'x' (incluye paréntesis y operadores).
+      - Espacios no escapados se ignoran.
+      - Caracteres en OPS => OP(c) (si NO están escapados).
+      - El resto => LIT(c).
+    """
+    tokens = []
+    i = 0
+    while i < len(regex):
+        c = regex[i]
+        if c == '\\':
+            if i + 1 >= len(regex):
+                raise ValueError("Barra invertida '\\' al final sin carácter a escapar")
+            tokens.append({'type': 'LIT', 'val': regex[i+1]})
+            i += 2
+        else:
+            if c.isspace():
+                i += 1
+                continue
+            if c in OPS:
+                tokens.append({'type': 'OP', 'val': c})
+            else:
+                tokens.append({'type': 'LIT', 'val': c})
+            i += 1
+    return tokens
+
+def es_simbolo_tok(tok):
+    return tok['type'] == 'LIT'  # cualquier literal, incluida 'ε'
+
+def tok_is(tok, t, v=None):
+    return tok['type'] == t and (v is None or tok['val'] == v)
 
 def insertar_concatenacion(regex):
-    """Inserta el operador '.' donde la concatenación es implicita."""
-    res = []
-    for i, c1 in enumerate(regex):
-        if c1 == ' ':
-            continue
-        res.append(c1)
-        if i == len(regex)-1:
-            break
-        if regex[i+1] == ' ':
-            continue
-        c2 = regex[i+1]
-        if (
-            (es_simbolo(c1) or c1 in [')', '*', '+', '?']) and
-            (es_simbolo(c2) or c2 in ['(', 'ε'])
-        ):
-            res.append('.')
-    return ''.join(res)
+    """
+    Inserta el operador interno '·' entre tokens donde la concatenación es implícita.
+    """
+    toks = tokenizar(regex)
+    if not toks:
+        return []
 
-def a_postfija(regex):
-    """Convierte regex infija a postfija (shunting-yard)."""
+    res = []
+    for i, c1 in enumerate(toks):
+        res.append(c1)
+        if i == len(toks) - 1:
+            break
+        c2 = toks[i+1]
+        # Insertamos concatenación entre:
+        #   X ∈ {símbolo, ')', '*', '+', '?'} y
+        #   Y ∈ {símbolo, '(', LIT('ε')}
+        cond1 = es_simbolo_tok(c1) or (tok_is(c1, 'OP') and c1['val'] in [')', '*', '+', '?'])
+        cond2 = es_simbolo_tok(c2) or tok_is(c2, 'OP', '(') or (c2['type'] == 'LIT' and c2['val'] == 'ε')
+        if cond1 and cond2:
+            res.append({'type': 'OP', 'val': '·'})
+    return res
+
+def a_postfija(tokens_conc):
+    """
+    Shunting-yard sobre tokens (con '·' como concatenación interna).
+    Devuelve lista de tokens en postfijo.
+    """
     output = []
     opstack = []
-    for c in regex:
-        if c == ' ':
-            continue
-        if es_simbolo(c):
-            output.append(c)
-        elif c == '(':
-            opstack.append(c)
-        elif c == ')':
-            while opstack and opstack[-1] != '(':
+
+    def prec(tok):
+        return PREC.get(tok['val'], -1)
+
+    for tok in tokens_conc:
+        if es_simbolo_tok(tok):
+            output.append(tok)
+        elif tok_is(tok, 'OP', '('):
+            opstack.append(tok)
+        elif tok_is(tok, 'OP', ')'):
+            while opstack and not tok_is(opstack[-1], 'OP', '('):
                 output.append(opstack.pop())
             if not opstack:
                 raise ValueError("Paréntesis desbalanceados")
-            opstack.pop()
-        elif c in PREC:
-            while (opstack and opstack[-1] != '(' and
-                   (PREC[opstack[-1]] > PREC[c] or
-                    (PREC[opstack[-1]] == PREC[c] and c not in RIGHT_ASSOC))):
+            opstack.pop()  # '('
+        elif tok['type'] == 'OP' and tok['val'] in PREC:
+            c = tok['val']
+            while (opstack and not tok_is(opstack[-1], 'OP', '(') and
+                   (prec(opstack[-1]) > PREC[c] or
+                    (prec(opstack[-1]) == PREC[c] and c not in RIGHT_ASSOC))):
                 output.append(opstack.pop())
-            opstack.append(c)
+            opstack.append(tok)
         else:
-            raise ValueError(f"Símbolo no soportado: {c!r}")
+            raise ValueError(f"Símbolo no soportado: {tok}")
 
     while opstack:
         top = opstack.pop()
-        if top in '()':
+        if tok_is(top, 'OP') and top['val'] in ['(', ')']:
             raise ValueError("Paréntesis desbalanceados al final")
         output.append(top)
-    return ''.join(output)
+
+    return output
+
+def stringify_postfix(post):
+    """
+    Para mostrar el postfijo a usuario:
+    - convertimos '·' (concat interna) en '.' para que sea legible.
+    """
+    s = []
+    for tok in post:
+        v = tok['val']
+        if tok['type'] == 'OP' and v == '·':
+            v = '.'
+        s.append(v)
+    return ''.join(s)
 
 # =========================================================
-# Thompson: Postfix -> AFN
+# Thompson: Postfija (tokens) -> AFN
 # =========================================================
 
 class Estado:
@@ -99,70 +158,84 @@ def thompson_desde_postfija(post):
     pila = []
     estados = []
 
+    def push_frag(s, f):
+        estados.extend([s, f])
+        pila.append((s, f))
+
+    def pop1(op):
+        if not pila:
+            raise ValueError(f"Falta operando para '{op}'")
+        return pila.pop()
+
+    def pop2(op):
+        if len(pila) < 2:
+            raise ValueError(f"Faltan operandos para '{op}'")
+        b1, b2 = pila.pop()
+        a1, a2 = pila.pop()
+        return a1, a2, b1, b2
+
     def frag_simbolo(a):
         s = nuevo_estado()
         f = nuevo_estado()
         s.trans[a].add(f)
-        estados.extend([s, f])
-        pila.append((s, f))
+        push_frag(s, f)
 
-    for c in post:
-        if es_simbolo(c):
+    for tok in post:
+        if es_simbolo_tok(tok):
+            c = tok['val']
             if c == 'ε':
                 s = nuevo_estado()
                 f = nuevo_estado()
                 s.eps.add(f)
-                estados.extend([s, f])
-                pila.append((s, f))
+                push_frag(s, f)
             else:
                 frag_simbolo(c)
-        elif c == '.':
-            b1, b2 = pila.pop()
-            a1, a2 = pila.pop()
-            a2.eps.add(b1)
-            pila.append((a1, b2))
-        elif c == '|':
-            b1, b2 = pila.pop()
-            a1, a2 = pila.pop()
-            s = nuevo_estado()
-            f = nuevo_estado()
-            s.eps.update([a1, b1])
-            a2.eps.add(f)
-            b2.eps.add(f)
-            estados.extend([s, f])
-            pila.append((s, f))
-        elif c == '*':
-            a1, a2 = pila.pop()
-            s = nuevo_estado()
-            f = nuevo_estado()
-            s.eps.update([a1, f])
-            a2.eps.update([a1, f])
-            estados.extend([s, f])
-            pila.append((s, f))
-        elif c == '+':
-            a1, a2 = pila.pop()
-            s = nuevo_estado()
-            f = nuevo_estado()
-            s.eps.add(a1)
-            a2.eps.update([a1, f])
-            estados.extend([s, f])
-            pila.append((s, f))
-        elif c == '?':
-            a1, a2 = pila.pop()
-            s = nuevo_estado()
-            f = nuevo_estado()
-            s.eps.update([a1, f])
-            a2.eps.add(f)
-            estados.extend([s, f])
-            pila.append((s, f))
+        elif tok['type'] == 'OP':
+            op = tok['val']
+            if op == '·':  # concatenación
+                a1, a2, b1, b2 = pop2('·')
+                a2.eps.add(b1)
+                push_frag(a1, b2)
+            elif op == '|':
+                a1, a2, b1, b2 = pop2('|')
+                s = nuevo_estado()
+                f = nuevo_estado()
+                s.eps.update([a1, b1])
+                a2.eps.add(f)
+                b2.eps.add(f)
+                push_frag(s, f)
+            elif op == '*':
+                a1, a2 = pop1('*')
+                s = nuevo_estado()
+                f = nuevo_estado()
+                s.eps.update([a1, f])
+                a2.eps.update([a1, f])
+                push_frag(s, f)
+            elif op == '+':
+                a1, a2 = pop1('+')
+                s = nuevo_estado()
+                f = nuevo_estado()
+                s.eps.add(a1)
+                a2.eps.update([a1, f])
+                push_frag(s, f)
+            elif op == '?':
+                a1, a2 = pop1('?')
+                s = nuevo_estado()
+                f = nuevo_estado()
+                s.eps.update([a1, f])
+                a2.eps.add(f)
+                push_frag(s, f)
+            else:
+                raise ValueError(f"Operador inesperado {op}")
         else:
-            raise ValueError(f"Operador inesperado {c}")
+            raise ValueError(f"Token inesperado {tok}")
 
     if len(pila) != 1:
-        raise ValueError("Expresión inválida (sobran fragmentos)")
+        raise ValueError("Expresión inválida (sobran o faltan fragmentos)")
 
     inicio, acept = pila.pop()
 
+    # recolectar alcanzables
     vistos = set()
     q = deque([inicio])
     alcance = []
@@ -181,7 +254,7 @@ def thompson_desde_postfija(post):
     return AFN(inicio, acept, alcance)
 
 # =========================================================
-# Simulacion de AFN
+# Simulación de AFN
 # =========================================================
 
 def epsilon_cierre(estados):
@@ -211,135 +284,16 @@ def acepta(afn, cadena):
     return afn.aceptacion in actual
 
 # =========================================================
-# Dibujo del AFN / AFD (mejoras de legibilidad de flechas y finales)
-# =========================================================
-
-def _render_with_graphviz(edges, start_id, accept_ids, png_path, dot_path):
-    """Intenta renderizar con Graphviz (flechas nítidas y rankdir=LR)."""
-    try:
-        from graphviz import Digraph
-        dot = Digraph(format='png')
-        dot.attr(rankdir='LR', dpi='180', concentrate='false')
-        dot.attr('node', shape='circle')
-
-        nodes = set([start_id])
-        for (u, v) in edges.keys():
-            nodes.add(u); nodes.add(v)
-
-        for u in nodes:
-            if u in accept_ids:
-                # Finales: doble círculo y relleno suave para distinguir
-                dot.node(str(u), shape='doublecircle', style='filled', fillcolor='lightgrey')
-            else:
-                dot.node(str(u), shape='circle')
-
-        # nodo de inicio (punto) y flecha de inicio
-        dot.node('start', shape='point')
-        dot.edge('start', str(start_id), label='')
-
-        for (u, v), lab in edges.items():
-            dot.edge(str(u), str(v), label=lab)
-
-        with open(dot_path, 'w', encoding='utf-8') as f:
-            f.write(dot.source)
-
-        dot.render(filename=png_path, cleanup=True)  # produce png_path.png
-        import os, shutil
-        src = png_path + '.png'
-        if os.path.exists(src):
-            shutil.move(src, png_path)
-        return f"Imagen generada con Graphviz: {png_path}"
-    except Exception:
-        return None  # usar fallback
-
-
-def _render_with_networkx(nodes, edges, start_id, accept_ids, png_path):
-    """Fallback usando NetworkX/Matplotlib con ajustes de flecha y layout + final doble aro."""
-    import networkx as nx
-    import matplotlib.pyplot as plt
-
-    G = nx.DiGraph()
-    G.add_nodes_from(nodes)
-    for (u, v), lab in edges.items():
-        G.add_edge(u, v, label=lab)
-
-    pos = None
-    try:
-        from networkx.drawing.nx_pydot import graphviz_layout
-        pos = graphviz_layout(G, prog='dot')
-    except Exception:
-        try:
-            from networkx.drawing.nx_agraph import graphviz_layout as gv2
-            pos = gv2(G, prog='dot')
-        except Exception:
-            pos = nx.spring_layout(G, seed=42, k=0.8, iterations=200)
-
-    accept_nodes = list(accept_ids)
-    others = [n for n in G.nodes if n not in accept_nodes and n != start_id]
-
-    plt.figure(figsize=(9, 6))
-    # Otros nodos
-    nx.draw_networkx_nodes(G, pos, nodelist=others, node_size=620, linewidths=1.2)
-    # Inicio: cuadrado
-    nx.draw_networkx_nodes(G, pos, nodelist=[start_id], node_shape='s', node_size=760, linewidths=1.2)
-    # Finales: fondo suave
-    nx.draw_networkx_nodes(G, pos, nodelist=accept_nodes, node_size=760, linewidths=1.5, node_color='#e0e0e0')
-    # Aro exterior extra para simular "doble círculo"
-    nx.draw_networkx_nodes(G, pos, nodelist=accept_nodes, node_size=880, linewidths=2.2, node_color='none')
-
-    nx.draw_networkx_labels(G, pos, labels={n: str(n) for n in G.nodes()}, font_size=10)
-
-    nx.draw_networkx_edges(
-        G, pos,
-        arrows=True,
-        arrowsize=24,
-        width=1.6,
-        connectionstyle='arc3,rad=0.16'
-    )
-
-    e_labels = {(u, v): d['label'] for u, v, d in G.edges(data=True)}
-    nx.draw_networkx_edge_labels(
-        G, pos, edge_labels=e_labels,
-        font_size=9,
-        bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='none', alpha=0.8)
-    )
-
-    plt.axis('off')
-    plt.tight_layout()
-    plt.savefig(png_path, dpi=180)
-    plt.close()
-    return f"Imagen generada con NetworkX/Matplotlib: {png_path}"
-
-def dibujar_afn(afn, nombre_png, nombre_dot):
-    # reunir etiquetas por arista
-    from collections import defaultdict as _dd
-    edge_labels = _dd(list)
-    nodes = set()
-    for s in afn.estados:
-        nodes.add(s.id)
-        for v in s.eps:
-            edge_labels[(s.id, v.id)].append('ε')
-        for sym, dests in s.trans.items():
-            for v in dests:
-                edge_labels[(s.id, v.id)].append(sym)
-    edges = {(u, v): '|'.join(sorted(set(labs))) for (u, v), labs in edge_labels.items()}
-
-    ok = _render_with_graphviz(edges, afn.inicio.id, {afn.aceptacion.id}, nombre_png, nombre_dot)
-    if ok:
-        return ok
-    return _render_with_networkx(nodes, edges, afn.inicio.id, {afn.aceptacion.id}, nombre_png)
-
-# =========================================================
-# AFN -> AFD 
+# AFN -> AFD, dibujo, minimización (igual que antes)
 # =========================================================
 
 class EstadoDFA:
     __slots__ = ("id", "trans", "aceptacion", "nfa_set")
     def __init__(self, id_, nfa_set, aceptacion=False):
         self.id = id_
-        self.nfa_set = nfa_set        # frozenset(Estados NFA) o None
-        self.trans = {}               # Dict[str, EstadoDFA]
-        self.aceptacion = aceptacion  # bool
+        self.nfa_set = nfa_set
+        self.trans = {}
+        self.aceptacion = aceptacion
 
 class AFD:
     def __init__(self, inicio, estados):
@@ -394,6 +348,102 @@ def acepta_afd(afd, cadena):
         actual = actual.trans[c]
     return actual.aceptacion
 
+# --------- Dibujo (Graphviz/NetworkX) ---------
+def _render_with_graphviz(edges, start_id, accept_ids, png_path, dot_path):
+    try:
+        from graphviz import Digraph
+        dot = Digraph(format='png')
+        dot.attr(rankdir='LR', dpi='180', concentrate='false')
+        dot.attr('node', shape='circle')
+
+        nodes = set([start_id])
+        for (u, v) in edges.keys():
+            nodes.add(u); nodes.add(v)
+
+        for u in nodes:
+            if u in accept_ids:
+                dot.node(str(u), shape='doublecircle', style='filled', fillcolor='lightgrey')
+            else:
+                dot.node(str(u), shape='circle')
+
+        dot.node('start', shape='point')
+        dot.edge('start', str(start_id), label='')
+
+        for (u, v), lab in edges.items():
+            dot.edge(str(u), str(v), label=lab)
+
+        with open(dot_path, 'w', encoding='utf-8') as f:
+            f.write(dot.source)
+
+        dot.render(filename=png_path, cleanup=True)
+        import os, shutil
+        src = png_path + '.png'
+        if os.path.exists(src):
+            shutil.move(src, png_path)
+        return f"Imagen generada con Graphviz: {png_path}"
+    except Exception:
+        return None
+
+def _render_with_networkx(nodes, edges, start_id, accept_ids, png_path):
+    import networkx as nx
+    import matplotlib.pyplot as plt
+
+    G = nx.DiGraph()
+    G.add_nodes_from(nodes)
+    for (u, v), lab in edges.items():
+        G.add_edge(u, v, label=lab)
+
+    pos = None
+    try:
+        from networkx.drawing.nx_pydot import graphviz_layout
+        pos = graphviz_layout(G, prog='dot')
+    except Exception:
+        try:
+            from networkx.drawing.nx_agraph import graphviz_layout as gv2
+            pos = gv2(G, prog='dot')
+        except Exception:
+            pos = nx.spring_layout(G, seed=42, k=0.8, iterations=200)
+
+    accept_nodes = list(accept_ids)
+    others = [n for n in G.nodes if n not in accept_nodes and n != start_id]
+
+    plt.figure(figsize=(9, 6))
+    nx.draw_networkx_nodes(G, pos, nodelist=others, node_size=620, linewidths=1.2)
+    nx.draw_networkx_nodes(G, pos, nodelist=[start_id], node_shape='s', node_size=760, linewidths=1.2)
+    nx.draw_networkx_nodes(G, pos, nodelist=accept_nodes, node_size=760, linewidths=1.5, node_color='#e0e0e0')
+    nx.draw_networkx_nodes(G, pos, nodelist=accept_nodes, node_size=880, linewidths=2.2, node_color='none')
+
+    nx.draw_networkx_labels(G, pos, labels={n: str(n) for n in G.nodes()}, font_size=10)
+    nx.draw_networkx_edges(G, pos, arrows=True, arrowsize=24, width=1.6, connectionstyle='arc3,rad=0.16')
+
+    e_labels = {(u, v): d['label'] for u, v, d in G.edges(data=True)}
+    nx.draw_networkx_edge_labels(G, pos, edge_labels=e_labels, font_size=9,
+                                 bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='none', alpha=0.8))
+
+    plt.axis('off')
+    plt.tight_layout()
+    plt.savefig(png_path, dpi=180)
+    plt.close()
+    return f"Imagen generada con NetworkX/Matplotlib: {png_path}"
+
+def dibujar_afn(afn, nombre_png, nombre_dot):
+    from collections import defaultdict as _dd
+    edge_labels = _dd(list)
+    nodes = set()
+    for s in afn.estados:
+        nodes.add(s.id)
+        for v in s.eps:
+            edge_labels[(s.id, v.id)].append('ε')
+        for sym, dests in s.trans.items():
+            for v in dests:
+                edge_labels[(s.id, v.id)].append(sym)
+    edges = {(u, v): '|'.join(sorted(set(labs))) for (u, v), labs in edge_labels.items()}
+
+    ok = _render_with_graphviz(edges, afn.inicio.id, {afn.aceptacion.id}, nombre_png, nombre_dot)
+    if ok:
+        return ok
+    return _render_with_networkx(nodes, edges, afn.inicio.id, {afn.aceptacion.id}, nombre_png)
+
 def dibujar_afd(afd, nombre_png, nombre_dot):
     from collections import defaultdict as _dd
     edge_labels = _dd(list)
@@ -424,7 +474,6 @@ def dfa_alfabeto(afd):
     return A
 
 def dfa_estados_reachables(afd):
-    """Devuelve lista de estados alcanzables desde el inicio y un mapping id->estado."""
     vistos = set()
     orden = []
     q = deque([afd.inicio])
@@ -452,7 +501,6 @@ def dfa_estados_reachables(afd):
     return AFD(inicio, nuevos)
 
 def dfa_completar_con_sumidero(afd):
-    """Devuelve AFD total añadiendo (si hace falta) un estado sumidero con bucles."""
     A = dfa_alfabeto(afd)
     old_to_new = {}
     nuevos = []
@@ -475,7 +523,6 @@ def dfa_completar_con_sumidero(afd):
                 ns.trans[a] = sink
                 need_sink = True
     if need_sink:
-        # bucles en el sumidero
         for a in A:
             sink.trans[a] = sink
         nuevos.append(sink)
@@ -483,26 +530,15 @@ def dfa_completar_con_sumidero(afd):
     return AFD(inicio, nuevos)
 
 def minimizar_afd(afd):
-    """
-    Minimiza un AFD usando Hopcroft:
-      1) eliminar inalcanzables
-      2) completar con sumidero (total)
-      3) particionar (acept./no-acept.) y refinar
-      4) construir AFD mínimo
-    """
-
     afd1 = dfa_estados_reachables(afd)
-
     afd2 = dfa_completar_con_sumidero(afd1)
 
     estados = afd2.estados
     A = sorted(dfa_alfabeto(afd2))
 
-    # índices
     idx_of = {s.id: i for i, s in enumerate(estados)}
     by_idx = estados
 
-    # delta en tabla
     sym_to_pos = {a: k for k, a in enumerate(A)}
     delta = [[None]*len(A) for _ in by_idx]
     for i, s in enumerate(by_idx):
@@ -519,7 +555,8 @@ def minimizar_afd(afd):
     from collections import deque as _dq
     W = _dq([set(g) for g in P])
 
-    inv = [defaultdict(set) for _ in A]  # preimagen por letra
+    from collections import defaultdict as _dd
+    inv = [_dd(set) for _ in A]
     for i in range(len(by_idx)):
         for k in range(len(A)):
             j = delta[i][k]
@@ -546,7 +583,6 @@ def minimizar_afd(afd):
                     newP.append(B)
             P = newP
 
-    block_id = {id_block: i for i, id_block in enumerate(range(len(P)))}
     block_of_state = {}
     for b, B in enumerate(P):
         for i in B:
@@ -567,9 +603,7 @@ def minimizar_afd(afd):
 
     b0 = block_of_state[idx_of[afd2.inicio.id]]
     afd_min = AFD(min_states[b0], min_states)
-
-    afd_min = dfa_estados_reachables(afd_min)
-    return afd_min
+    return dfa_estados_reachables(afd_min)
 
 # =========================================================
 # Entrada / salida
@@ -601,45 +635,36 @@ def main():
         print(f"  w = {w!r}")
 
         try:
-            regl = insertar_concatenacion(regex)
-            post = a_postfija(regl)
+            tokens_conc = insertar_concatenacion(regex)
+            post = a_postfija(tokens_conc)
             afn = thompson_desde_postfija(post)
 
-            print(f"  Postfix: {post}")
+            print(f"  Postfix: {stringify_postfix(post)}")
 
-            # Dibujo AFN
             msg = dibujar_afn(afn, f"nfa_{i}.png", f"nfa_{i}.dot")
             print(" ", msg)
 
-            # Simulación AFN
             ok = acepta(afn, w)
             print(f"  w ∈ L(r) con AFN: {'sí' if ok else 'no'}")
 
-            # AFN -> AFD
             afd = afn_a_afd(afn)
 
-            # Dibujo AFD
             msg_dfa = dibujar_afd(afd, f"dfa_{i}.png", f"dfa_{i}.dot")
             print(" ", msg_dfa)
 
-            # Simulacion AFD
             ok_dfa = acepta_afd(afd, w)
             print(f"  w ∈ L(r) con AFD: {'sí' if ok_dfa else 'no'}")
 
-            # AFD -> AFD MIN 
             afd_min = minimizar_afd(afd)
 
-            # Dibujo AFD Minimizado
             msg_min = dibujar_afd(afd_min, f"dfa_min_{i}.png", f"dfa_min_{i}.dot")
             print(" ", msg_min)
 
-            # Simulacion AFD mínimo
             ok_min = acepta_afd(afd_min, w)
             print(f"  w ∈ L(r) con AFD MIN: {'sí' if ok_min else 'no'}")
 
         except Exception as e:
             print("  Error al procesar la expresión:", e)
-
 
 if __name__ == "__main__":
     main()
